@@ -237,3 +237,10 @@ func buildSiteMap(entries []HTTPEntry) *SiteMap {
 
 	return siteMap
 }
+
+func (r *Reader) RepeaterTabNames() ([]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.parser.ScanRepeaterTabNames()
+}

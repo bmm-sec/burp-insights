@@ -2,10 +2,12 @@ package burp
 
 import (
 	"bytes"
+	stdbinary "encoding/binary"
 	"errors"
 	"regexp"
 	"strings"
 	"sync"
+	"unicode/utf16"
 
 	"github.com/bmm-sec/burp-insights/internal/binary"
 )
@@ -494,4 +496,104 @@ func intToString(n int) string {
 		n /= 10
 	}
 	return string(digits)
+}
+
+func (p *Parser) ScanRepeaterTabNames() ([]string, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	fileSize := p.reader.Size()
+	bufSize := 1024 * 1024
+
+	var tabNames []string
+	seenNames := make(map[string]struct{})
+
+	stringRecordHeader := []byte{0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x20}
+	repeaterRecordMarker := []byte{0x00, 0x02, 0x01, 0x00, 0x0a, 0x02, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58}
+
+	const (
+		stringChars       = 32
+		stringOffset      = 8
+		markerOffset      = 0xb8
+		minRequiredLength = markerOffset + 16
+	)
+
+	offset := int64(HeaderSize)
+
+	for offset < fileSize {
+		readSize := bufSize
+		remaining := fileSize - offset
+		if remaining < int64(bufSize) {
+			readSize = int(remaining)
+		}
+
+		data, err := p.reader.ReadAt(offset, readSize)
+		if err != nil || len(data) == 0 {
+			break
+		}
+
+		searchIdx := 0
+		for {
+			pos := bytes.Index(data[searchIdx:], stringRecordHeader)
+			if pos == -1 {
+				break
+			}
+			i := searchIdx + pos
+
+			if i+minRequiredLength <= len(data) && matchesPattern(data[i+markerOffset:], repeaterRecordMarker) {
+				name := extractFixedUTF16BEString(data[i+stringOffset:], stringChars)
+				if name != "" {
+					if _, ok := seenNames[name]; !ok {
+						seenNames[name] = struct{}{}
+						tabNames = append(tabNames, name)
+					}
+				}
+			}
+
+			searchIdx = i + 1
+		}
+
+		overlap := 512
+		if len(data) > overlap {
+			offset += int64(len(data) - overlap)
+		} else {
+			offset += int64(len(data))
+		}
+	}
+
+	return tabNames, nil
+}
+
+func matchesPattern(data []byte, pattern []byte) bool {
+	if len(data) < len(pattern) {
+		return false
+	}
+	for i := 0; i < len(pattern); i++ {
+		if data[i] != pattern[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func extractFixedUTF16BEString(data []byte, maxChars int) string {
+	maxBytes := maxChars * 2
+	if len(data) < maxBytes {
+		maxBytes = len(data) - (len(data) % 2)
+	}
+
+	units := make([]uint16, 0, maxChars)
+	for i := 0; i+1 < maxBytes; i += 2 {
+		unit := stdbinary.BigEndian.Uint16(data[i : i+2])
+		if unit == 0 {
+			break
+		}
+		units = append(units, unit)
+	}
+
+	if len(units) == 0 {
+		return ""
+	}
+
+	return string(utf16.Decode(units))
 }

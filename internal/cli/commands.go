@@ -89,6 +89,13 @@ var sitemapCmd = &cobra.Command{
 	RunE:  runSitemap,
 }
 
+var repeaterCmd = &cobra.Command{
+	Use:   "repeater <file.burp>",
+	Short: "List Repeater tab names",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runRepeater,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&outputFile, "output", "o", "", "Write output to file")
 	rootCmd.PersistentFlags().StringVarP(&outputFormat, "format", "f", "table", "Output format: json, jsonl, csv, table, har")
@@ -132,6 +139,7 @@ func init() {
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(reportCmd)
 	rootCmd.AddCommand(sitemapCmd)
+	rootCmd.AddCommand(repeaterCmd)
 }
 
 func Execute() error {
@@ -435,6 +443,51 @@ func runSitemap(cmd *cobra.Command, args []string) error {
 		for path, count := range paths {
 			fmt.Fprintf(output, "  %s (%d)\n", path, count)
 		}
+	}
+
+	return nil
+}
+
+func runRepeater(cmd *cobra.Command, args []string) error {
+	filePath := args[0]
+
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "Scanning %s for Repeater tabs...\n", filePath)
+	}
+
+	reader, err := burp.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer reader.Close()
+
+	tabNames, err := reader.RepeaterTabNames()
+	if err != nil {
+		return fmt.Errorf("failed to extract repeater tabs: %w", err)
+	}
+
+	output := getOutputWriter()
+	defer closeOutputWriter(output)
+
+	if outputFormat == "json" {
+		return outputJSON(output, map[string]interface{}{
+			"count": len(tabNames),
+			"tabs":  tabNames,
+		})
+	}
+
+	if len(tabNames) == 0 {
+		fmt.Fprintln(output, "No Repeater tabs found")
+		return nil
+	}
+
+	fmt.Fprintf(output, "Found %d Repeater tab(s):\n\n", len(tabNames))
+	for i, name := range tabNames {
+		fmt.Fprintf(output, "%3d. %s\n", i+1, name)
+	}
+
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "\nNote: Only tab names are extracted. Request/response data requires more complex parsing.\n")
 	}
 
 	return nil
