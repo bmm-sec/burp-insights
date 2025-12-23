@@ -38,6 +38,19 @@ var (
 
 	reportTitle    string
 	reportTemplate string
+
+	burpJarPath string
+
+	reportSections        string
+	reportMaxHistory      int
+	reportMaxIssues       int
+	reportMaxRepeater     int
+	reportMaxTasks        int
+	reportMaxEvidence     int
+	reportIncludeEvidence bool
+
+	issueDefsUseEmbedded bool
+	burpNoAutoDetect     bool
 )
 
 var rootCmd = &cobra.Command{
@@ -96,6 +109,27 @@ var repeaterCmd = &cobra.Command{
 	RunE:  runRepeater,
 }
 
+var issuesCmd = &cobra.Command{
+	Use:   "issues <file.burp>",
+	Short: "List Scanner issues found in the project",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runIssues,
+}
+
+var tasksCmd = &cobra.Command{
+	Use:   "tasks <file.burp>",
+	Short: "List Burp tasks (UI task list)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTasks,
+}
+
+var issueDefinitionsCmd = &cobra.Command{
+	Use:   "issue-definitions",
+	Short: "Export Burp Scanner issue definitions as JSON",
+	Args:  cobra.NoArgs,
+	RunE:  runIssueDefinitions,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&outputFile, "output", "o", "", "Write output to file")
 	rootCmd.PersistentFlags().StringVarP(&outputFormat, "format", "f", "table", "Output format: json, jsonl, csv, table, har")
@@ -122,6 +156,9 @@ func init() {
 	searchCmd.Flags().StringVar(&searchScope, "scope", "all", "Search scope: all, requests, responses, headers, bodies, urls")
 	searchCmd.Flags().IntVarP(&limit, "limit", "n", 0, "Limit number of results")
 
+	issuesCmd.Flags().StringVar(&burpJarPath, "burp-jar", "", "Optional Burp Suite JAR path to override embedded issue definitions")
+	issuesCmd.Flags().BoolVar(&burpNoAutoDetect, "no-jar-autodetect", false, "Disable auto-detection of Burp Suite jar for issue definitions")
+
 	exportCmd.Flags().StringVarP(&hostFilter, "host", "H", "", "Filter by host (regex)")
 	exportCmd.Flags().StringVarP(&pathFilter, "path", "p", "", "Filter by path (regex)")
 	exportCmd.Flags().StringVarP(&methodFilter, "method", "m", "", "Filter by HTTP method")
@@ -132,6 +169,19 @@ func init() {
 	reportCmd.Flags().StringVar(&reportTitle, "title", "Burp Project Report", "Report title")
 	reportCmd.Flags().StringVar(&reportTemplate, "template", "", "Custom HTML template")
 	reportCmd.Flags().BoolVar(&includeBody, "include-bodies", false, "Include request/response bodies")
+	reportCmd.Flags().StringVar(&reportSections, "sections", "all", "Report sections: all, issues, history, repeater, tasks, sitemap")
+	reportCmd.Flags().IntVar(&reportMaxHistory, "max-history", 500, "Max HTTP history entries to include (0 for all)")
+	reportCmd.Flags().IntVar(&reportMaxIssues, "max-issues", 0, "Max issues to include (0 for all)")
+	reportCmd.Flags().IntVar(&reportMaxRepeater, "max-repeater", 0, "Max repeater tabs to include (0 for all)")
+	reportCmd.Flags().IntVar(&reportMaxTasks, "max-tasks", 0, "Max tasks to include (0 for all)")
+	reportCmd.Flags().IntVar(&reportMaxEvidence, "max-evidence", 0, "Max evidence items per issue (0 for all)")
+	reportCmd.Flags().BoolVar(&reportIncludeEvidence, "include-evidence", true, "Include issue evidence request/response data")
+	reportCmd.Flags().StringVar(&burpJarPath, "burp-jar", "", "Optional Burp Suite JAR path to override embedded issue definitions")
+	reportCmd.Flags().BoolVar(&burpNoAutoDetect, "no-jar-autodetect", false, "Disable auto-detection of Burp Suite jar for issue definitions")
+
+	issueDefinitionsCmd.Flags().StringVar(&burpJarPath, "burp-jar", "", "Optional Burp Suite JAR path to override embedded issue definitions")
+	issueDefinitionsCmd.Flags().BoolVar(&issueDefsUseEmbedded, "embedded", false, "Use embedded issue definitions instead of a jar")
+	issueDefinitionsCmd.Flags().BoolVar(&burpNoAutoDetect, "no-jar-autodetect", false, "Disable auto-detection of Burp Suite jar for issue definitions")
 
 	rootCmd.AddCommand(infoCmd)
 	rootCmd.AddCommand(historyCmd)
@@ -140,6 +190,9 @@ func init() {
 	rootCmd.AddCommand(reportCmd)
 	rootCmd.AddCommand(sitemapCmd)
 	rootCmd.AddCommand(repeaterCmd)
+	rootCmd.AddCommand(issuesCmd)
+	rootCmd.AddCommand(tasksCmd)
+	rootCmd.AddCommand(issueDefinitionsCmd)
 }
 
 func Execute() error {
@@ -393,21 +446,75 @@ func runExport(cmd *cobra.Command, args []string) error {
 func runReport(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 
+	sections, err := parseReportSections(reportSections)
+	if err != nil {
+		return err
+	}
+	if !sections.History && !sections.Issues && !sections.Repeater && !sections.Tasks && !sections.Sitemap {
+		return fmt.Errorf("no report sections selected")
+	}
+
 	reader, err := burp.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer reader.Close()
 
-	project, err := reader.Project()
-	if err != nil {
-		return fmt.Errorf("failed to load project: %w", err)
+	report := &ReportData{}
+	opts := ReportOptions{
+		Title:            reportTitle,
+		IncludeBodies:    includeBody,
+		IncludeEvidence:  reportIncludeEvidence,
+		MaxBodySize:      int(maxBodySize),
+		MaxHistory:       reportMaxHistory,
+		MaxIssues:        reportMaxIssues,
+		MaxRepeater:      reportMaxRepeater,
+		MaxTasks:         reportMaxTasks,
+		MaxEvidenceItems: reportMaxEvidence,
+		Sections:         sections,
+	}
+
+	if sections.Issues {
+		loadIssueDefinitions()
+		issues, err := reader.ScannerIssueMetas()
+		if err != nil {
+			return fmt.Errorf("failed to extract issues: %w", err)
+		}
+		report.Issues = issues
+	}
+
+	if sections.Repeater {
+		tabs, err := reader.RepeaterTabNames()
+		if err != nil {
+			return fmt.Errorf("failed to extract repeater tabs: %w", err)
+		}
+		report.RepeaterTabs = tabs
+	}
+
+	if sections.Tasks {
+		tasks, err := reader.UITasks()
+		if err != nil {
+			return fmt.Errorf("failed to extract tasks: %w", err)
+		}
+		report.Tasks = tasks
+	}
+
+	needHistory := sections.History || sections.Sitemap
+	if needHistory {
+		history, err := reader.HTTPHistory()
+		if err != nil {
+			return fmt.Errorf("failed to read history: %w", err)
+		}
+		report.History = history
+		if sections.Sitemap {
+			report.SiteMap = buildSiteMapFromHistory(history)
+		}
 	}
 
 	output := getOutputWriter()
 	defer closeOutputWriter(output)
 
-	return generateHTMLReport(output, project, reportTitle, includeBody)
+	return generateHTMLReport(output, report, opts)
 }
 
 func runSitemap(cmd *cobra.Command, args []string) error {
@@ -491,6 +598,188 @@ func runRepeater(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func runIssues(cmd *cobra.Command, args []string) error {
+	filePath := args[0]
+
+	loadIssueDefinitions()
+
+	reader, err := burp.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer reader.Close()
+
+	metas, err := reader.ScannerIssueMetas()
+	if err != nil {
+		return fmt.Errorf("failed to extract issues: %w", err)
+	}
+
+	output := getOutputWriter()
+	defer closeOutputWriter(output)
+
+	if outputFormat == "json" {
+		return outputJSON(output, map[string]interface{}{
+			"burpFile": filePath,
+			"count":    len(metas),
+			"issues":   metas,
+		})
+	}
+
+	fmt.Fprintf(output, "Found %d issue(s):\n\n", len(metas))
+	fmt.Fprintf(output, "%-3s %-20s %-22s %-10s %-40s %s\n", "#", "Serial", "Severity/Confidence", "Type", "Name", "Host/Path")
+	fmt.Fprintf(output, "%s\n", strings.Repeat("-", 120))
+	for i, meta := range metas {
+		sevConf := fmt.Sprintf("%s/%s", meta.Severity.String(), meta.Confidence.String())
+		typeID := fmt.Sprintf("0x%08x", meta.Type)
+
+		name := "Unknown"
+		if meta.Definition != nil && meta.Definition.Name != "" {
+			name = meta.Definition.Name
+		}
+
+		hostPath := meta.Location
+		if meta.Host != "" && meta.Path != "" {
+			hostPath = meta.Host + meta.Path
+		} else if meta.Host != "" {
+			hostPath = meta.Host
+		} else if meta.Path != "" {
+			hostPath = meta.Path
+		}
+
+		fmt.Fprintf(output, "%-3d %-20d %-22s %-10s %-40s %s\n",
+			i+1,
+			meta.SerialNumber,
+			sevConf,
+			typeID,
+			name,
+			hostPath,
+		)
+	}
+	return nil
+}
+
+func runTasks(cmd *cobra.Command, args []string) error {
+	filePath := args[0]
+
+	reader, err := burp.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer reader.Close()
+
+	tasks, err := reader.UITasks()
+	if err != nil {
+		return fmt.Errorf("failed to extract tasks: %w", err)
+	}
+
+	output := getOutputWriter()
+	defer closeOutputWriter(output)
+
+	if outputFormat == "json" {
+		return outputJSON(output, map[string]interface{}{
+			"burpFile": filePath,
+			"count":    len(tasks),
+			"tasks":    tasks,
+		})
+	}
+
+	if len(tasks) == 0 {
+		fmt.Fprintln(output, "No tasks found")
+		return nil
+	}
+
+	fmt.Fprintf(output, "Found %d task(s):\n\n", len(tasks))
+	for _, task := range tasks {
+		fmt.Fprintf(output, "- %s\n", task.Name)
+	}
+
+	return nil
+}
+
+func runIssueDefinitions(cmd *cobra.Command, args []string) error {
+	loaded := false
+
+	if !issueDefsUseEmbedded {
+		jarPath, autoDetected := resolveBurpJarPath()
+		if jarPath != "" {
+			if err := burp.LoadIssueDefinitionsFromJar(jarPath); err != nil {
+				if !autoDetected {
+					return fmt.Errorf("failed to load issue definitions from jar: %w", err)
+				}
+				if !quiet {
+					fmt.Fprintf(os.Stderr, "Warning: failed to load issue definitions from %s: %v\n", jarPath, err)
+				}
+			} else {
+				loaded = true
+			}
+		}
+	}
+
+	if !loaded {
+		if err := burp.LoadEmbeddedIssueDefinitions(); err != nil {
+			return fmt.Errorf("failed to load embedded issue definitions: %w", err)
+		}
+		if !issueDefsUseEmbedded && !quiet && verbose {
+			fmt.Fprintln(os.Stderr, "Using embedded issue definitions (no jar provided)")
+		}
+	}
+
+	defs := burp.IssueDefinitions()
+	export := burp.IssueDefinitionsExport{
+		Count:       len(defs),
+		Definitions: defs,
+	}
+
+	output := getOutputWriter()
+	defer closeOutputWriter(output)
+
+	return outputJSON(output, export)
+}
+
+func loadIssueDefinitions() {
+	if err := burp.LoadEmbeddedIssueDefinitions(); err != nil {
+		if !quiet && verbose {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load embedded issue definitions: %v\n", err)
+		}
+	}
+
+	jarPath, autoDetected := resolveBurpJarPath()
+	if jarPath == "" {
+		return
+	}
+
+	if err := burp.LoadIssueDefinitionsFromJar(jarPath); err != nil {
+		if !quiet && (!autoDetected || verbose) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load issue definitions from %s: %v\n", jarPath, err)
+		}
+		return
+	}
+
+	if verbose {
+		fmt.Fprintf(os.Stderr, "Loaded issue definitions from %s\n", jarPath)
+	}
+}
+
+func resolveBurpJarPath() (string, bool) {
+	jarPath := strings.TrimSpace(burpJarPath)
+	if jarPath == "" {
+		jarPath = strings.TrimSpace(os.Getenv("BURP_JAR_PATH"))
+	}
+	if jarPath == "" {
+		jarPath = strings.TrimSpace(os.Getenv("BURP_JAR"))
+	}
+
+	autoDetected := false
+	if jarPath == "" && !burpNoAutoDetect {
+		if detected, err := burp.FindDefaultBurpJar(); err == nil {
+			jarPath = detected
+			autoDetected = true
+		}
+	}
+
+	return jarPath, autoDetected
 }
 
 func buildFilter() *burp.Filter {

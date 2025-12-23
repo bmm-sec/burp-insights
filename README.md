@@ -37,6 +37,12 @@ burp-insights info <path-to-burp-file>
 # List HTTP history entries
 burp-insights history <path-to-burp-file>
 
+# List Scanner issues
+burp-insights issues <path-to-burp-file>
+
+# List Burp tasks (UI task list)
+burp-insights tasks <path-to-burp-file>
+
 # Show site map tree
 burp-insights sitemap <path-to-burp-file>
 
@@ -67,4 +73,3 @@ Supported export formats:
 - `--quiet` - Suppress non-essential output
 - `-v, --verbose` - Verbose output
 - `-h, --help` - Show help information
-

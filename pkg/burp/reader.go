@@ -244,3 +244,24 @@ func (r *Reader) RepeaterTabNames() ([]string, error) {
 
 	return r.parser.ScanRepeaterTabNames()
 }
+
+func (r *Reader) ScannerIssueMetas() ([]ScannerIssueMeta, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.parser.ScanScannerIssueMetas(nil)
+}
+
+func (r *Reader) ScannerTaskSummaries() ([]ScannerTaskSummary, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.parser.ScanScannerTaskSummaries(nil)
+}
+
+func (r *Reader) UITasks() ([]UITask, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.parser.ScanUITasks()
+}
