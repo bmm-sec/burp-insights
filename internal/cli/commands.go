@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bmm-sec/burp-insights/pkg/burp"
+	"github.com/bmm-sec/burp-insights/pkg/report"
 	"github.com/spf13/cobra"
 )
 
@@ -446,7 +447,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 func runReport(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 
-	sections, err := parseReportSections(reportSections)
+	sections, err := report.ParseSections(reportSections)
 	if err != nil {
 		return err
 	}
@@ -460,8 +461,8 @@ func runReport(cmd *cobra.Command, args []string) error {
 	}
 	defer reader.Close()
 
-	report := &ReportData{}
-	opts := ReportOptions{
+	reportData := &report.Data{}
+	opts := report.Options{
 		Title:            reportTitle,
 		IncludeBodies:    includeBody,
 		IncludeEvidence:  reportIncludeEvidence,
@@ -472,6 +473,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 		MaxTasks:         reportMaxTasks,
 		MaxEvidenceItems: reportMaxEvidence,
 		Sections:         sections,
+		TemplatePath:     reportTemplate,
 	}
 
 	if sections.Issues {
@@ -480,7 +482,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to extract issues: %w", err)
 		}
-		report.Issues = issues
+		reportData.Issues = issues
 	}
 
 	if sections.Repeater {
@@ -488,7 +490,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to extract repeater tabs: %w", err)
 		}
-		report.RepeaterTabs = tabs
+		reportData.RepeaterTabs = tabs
 	}
 
 	if sections.Tasks {
@@ -496,7 +498,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to extract tasks: %w", err)
 		}
-		report.Tasks = tasks
+		reportData.Tasks = tasks
 	}
 
 	needHistory := sections.History || sections.Sitemap
@@ -505,16 +507,16 @@ func runReport(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to read history: %w", err)
 		}
-		report.History = history
+		reportData.History = history
 		if sections.Sitemap {
-			report.SiteMap = buildSiteMapFromHistory(history)
+			reportData.SiteMap = report.BuildSiteMapFromHistory(history)
 		}
 	}
 
 	output := getOutputWriter()
 	defer closeOutputWriter(output)
 
-	return generateHTMLReport(output, report, opts)
+	return report.GenerateHTML(output, reportData, opts)
 }
 
 func runSitemap(cmd *cobra.Command, args []string) error {

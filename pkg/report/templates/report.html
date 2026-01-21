@@ -1,0 +1,705 @@
+{{ define "report" }}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .Title }}</title>
+    <style>
+        :root {
+            --primary: #dc2626;
+            --success: #16a34a;
+            --warning: #ca8a04;
+            --error: #dc2626;
+            --neutral: #374151;
+            --bg: #f9fafb;
+            --card-bg: #ffffff;
+            --border: #e5e7eb;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--neutral);
+            line-height: 1.6;
+        }
+        .container { width: 96vw; max-width: 96vw; margin: 0 auto; padding: 20px; }
+        header {
+            background: var(--primary);
+            color: white;
+            padding: 30px 0;
+            margin-bottom: 30px;
+        }
+        header h1 { font-size: 2rem; font-weight: 600; }
+        header p { opacity: 0.9; margin-top: 5px; }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .stat-card h3 { font-size: 0.875rem; color: #6b7280; margin-bottom: 5px; }
+        .stat-card .value { font-size: 2rem; font-weight: 700; color: #6b7280; }
+        .section {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        .section-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+        .section-content { padding: 20px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+        th { background: #f3f4f6; font-weight: 600; font-size: 0.875rem; }
+        tr:hover { background: #f9fafb; }
+        .method {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .method-GET { background: #dbeafe; color: #1d4ed8; }
+        .method-POST { background: #dcfce7; color: #15803d; }
+        .method-PUT { background: #fef3c7; color: #b45309; }
+        .method-DELETE { background: #fee2e2; color: #b91c1c; }
+        .status { font-weight: 600; }
+        .status-2xx { color: var(--success); }
+        .status-3xx { color: var(--primary); }
+        .status-4xx { color: var(--warning); }
+        .status-5xx { color: var(--error); }
+        .host-list { list-style: none; }
+        .host-list li { padding: 8px 0; border-bottom: 1px solid var(--border); }
+        .host-list li:last-child { border-bottom: none; }
+        .host-name { font-weight: 600; }
+        .host-count { color: #6b7280; font-size: 0.875rem; }
+        .filter-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .filter-bar input, .filter-bar select {
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 0.875rem;
+        }
+        .filter-bar input { flex: 1; min-width: 200px; }
+        .truncate { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .badge-info { background: #dbeafe; color: #1d4ed8; }
+        .badge-success { background: #dcfce7; color: #15803d; }
+        .badge-warning { background: #fef3c7; color: #b45309; }
+        .badge-error { background: #fee2e2; color: #b91c1c; }
+        .badge-tentative { background: #fef3c7; color: #b45309; }
+        .badge-firm { background: #dbeafe; color: #1d4ed8; }
+        .badge-certain { background: #dcfce7; color: #15803d; }
+        .badge-neutral { background: #e5e7eb; color: #374151; }
+        footer {
+            text-align: center;
+            padding: 30px;
+            color: #6b7280;
+            font-size: 0.875rem;
+        }
+        .expandable { cursor: pointer; }
+        .expandable:hover { background: #f3f4f6; }
+        .details { display: none; padding: 15px; background: #f9fafb; overflow-x: auto; }
+        .details.show { display: block; }
+        .details a, .details .meta-item, .details li { overflow-wrap: anywhere; word-break: break-word; }
+        .details pre {
+            background: #1f2937;
+            color: #e5e7eb;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 0.8rem;
+            max-height: 300px;
+            max-width: 100%;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+        .details h4 { margin: 10px 0; }
+        .details h5 { margin: 10px 0; font-size: 0.9rem; }
+        .details h6 { margin: 10px 0; font-size: 0.85rem; }
+        .issue-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+        .issue-title { flex: 1 1 100%; font-size: 1rem; font-weight: 600; color: #111827; }
+        .issue-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .issue-type {
+            padding: 2px 8px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            border: 1px solid var(--border);
+            background: #f3f4f6;
+            color: #374151;
+        }
+        .detail-grid {
+            display: grid;
+            grid-template-columns: 130px 1fr;
+            gap: 6px 12px;
+            margin-bottom: 10px;
+        }
+        .detail-label { font-size: 0.85rem; font-weight: 600; color: #374151; }
+        .detail-value { font-size: 0.85rem; color: #4b5563; overflow-wrap: anywhere; }
+        @media (max-width: 900px) {
+            .detail-grid { grid-template-columns: 1fr; }
+        }
+        .issue-group {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 16px;
+            background: var(--card-bg);
+        }
+        .issue-group summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 12px 40px 12px 16px;
+            display: flex;
+            align-items: center;
+            position: relative;
+        }
+        .issue-group summary::-webkit-details-marker { display: none; }
+        .issue-group summary::after {
+            content: ">";
+            font-weight: 600;
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        .issue-group[open] summary::after { content: "v"; }
+        .issue-group-summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            flex: 1;
+        }
+        .issue-group-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .issue-group-name { font-weight: 600; color: #111827; }
+        .issue-group-meta { color: #6b7280; font-size: 0.85rem; }
+        .issue-group-body { padding: 0 16px 16px; }
+        .muted { color: #6b7280; font-size: 0.85rem; }
+        .sitemap-tree { margin-top: 10px; }
+        .tree-root, .tree-list { list-style: none; margin: 0; padding-left: 0; }
+        .tree-list { margin-left: 12px; padding-left: 12px; border-left: 1px dashed var(--border); }
+        .tree-node summary {
+            list-style: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+        }
+        .tree-node summary::-webkit-details-marker { display: none; }
+        .tree-node summary::before {
+            content: ">";
+            font-size: 0.7rem;
+            color: #6b7280;
+            margin-right: 4px;
+        }
+        .tree-node[open] summary::before { content: "v"; }
+        .tree-leaf {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+        }
+        .tree-leaf::before {
+            content: "-";
+            color: #9ca3af;
+            margin-right: 4px;
+        }
+        .tree-label { color: #111827; }
+        .tree-count {
+            margin-left: auto;
+            background: #f3f4f6;
+            border: 1px solid var(--border);
+            border-radius: 9999px;
+            padding: 2px 8px;
+            font-size: 0.75rem;
+            color: #6b7280;
+        }
+        .copy-btn {
+            border: 1px solid var(--border);
+            background: #ffffff;
+            color: #374151;
+            border-radius: 6px;
+            padding: 2px 8px;
+            font-size: 0.7rem;
+            cursor: pointer;
+        }
+        .copy-btn:hover { background: #f3f4f6; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>{{ .Title }}</h1>
+            <p>Generated on {{ .GeneratedAt }}</p>
+        </div>
+    </header>
+    <div class="container">
+        {{ template "summary" . }}
+        {{ if .Issues }}{{ template "issues" .Issues }}{{ end }}
+        {{ if .Tasks }}{{ template "tasks" .Tasks }}{{ end }}
+        {{ if .Repeater }}{{ template "repeater" .Repeater }}{{ end }}
+        {{ if .History }}{{ template "history" .History }}{{ end }}
+        {{ if .SiteMap }}{{ template "sitemap" .SiteMap }}{{ end }}
+    </div>
+    <footer>
+        <p>{{ .FooterNote }} | {{ .FooterDate }}</p>
+    </footer>
+    <script>
+        function filterHistoryTable() {
+            const table = document.getElementById('historyTable');
+            if (!table) { return; }
+            const filter = document.getElementById('historyFilterInput').value.toLowerCase();
+            const statusFilter = document.getElementById('historyStatusFilter').value;
+            const rows = table.querySelectorAll('tbody tr.expandable');
+
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                const status = row.querySelector('.status')?.textContent || '';
+                const matchesText = filter === '' || text.includes(filter);
+                const matchesStatus = statusFilter === '' || status.startsWith(statusFilter);
+                row.style.display = matchesText && matchesStatus ? '' : 'none';
+
+                const nextRow = row.nextElementSibling;
+                if (nextRow && !nextRow.classList.contains('expandable')) {
+                    nextRow.style.display = matchesText && matchesStatus ? '' : 'none';
+                }
+            });
+        }
+
+        function filterIssuesTable() {
+            const container = document.getElementById('issuesTable');
+            if (!container) { return; }
+            const filter = document.getElementById('issueFilterInput').value.toLowerCase();
+            const severityFilter = document.getElementById('issueSeverityFilter')?.value || '';
+            const confidenceFilter = document.getElementById('issueConfidenceFilter')?.value || '';
+            const typeFilter = document.getElementById('issueTypeFilter')?.value || '';
+            const rows = container.querySelectorAll('tr.issue-row');
+            const filtersActive = filter !== '' || severityFilter !== '' || confidenceFilter !== '' || typeFilter !== '';
+
+            rows.forEach(row => {
+                const search = row.dataset.search || row.textContent.toLowerCase();
+                const matchesText = filter === '' || search.includes(filter);
+                const matchesSeverity = severityFilter === '' || row.dataset.severity === severityFilter;
+                const matchesConfidence = confidenceFilter === '' || row.dataset.confidence === confidenceFilter;
+                const matchesType = typeFilter === '' || row.dataset.type === typeFilter;
+                const matches = matchesText && matchesSeverity && matchesConfidence && matchesType;
+                row.style.display = matches ? '' : 'none';
+
+                const nextRow = row.nextElementSibling;
+                if (nextRow && !nextRow.classList.contains('issue-row')) {
+                    nextRow.style.display = matches ? '' : 'none';
+                }
+            });
+
+            const groups = container.querySelectorAll('details.issue-group');
+            groups.forEach(group => {
+                const groupRows = group.querySelectorAll('tr.issue-row');
+                let anyVisible = false;
+                groupRows.forEach(row => {
+                    if (row.style.display !== 'none') {
+                        anyVisible = true;
+                    }
+                });
+                group.style.display = anyVisible ? '' : 'none';
+                if (anyVisible && filtersActive) {
+                    group.open = true;
+                }
+            });
+        }
+
+        function toggleDetails(id) {
+            const details = document.getElementById('details-' + id);
+            if (details) {
+                details.classList.toggle('show');
+            }
+        }
+
+        function copyText(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            const btn = event.currentTarget;
+            const text = btn?.dataset?.copy || '';
+            if (!text) { return; }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => flashCopy(btn), () => fallbackCopy(text, btn));
+            } else {
+                fallbackCopy(text, btn);
+            }
+        }
+
+        function fallbackCopy(text, btn) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            try { document.execCommand('copy'); } catch (err) {}
+            document.body.removeChild(textarea);
+            flashCopy(btn);
+        }
+
+        function flashCopy(btn) {
+            if (!btn) { return; }
+            const original = btn.textContent;
+            btn.textContent = 'Copied';
+            setTimeout(() => {
+                btn.textContent = original;
+            }, 1000);
+        }
+    </script>
+</body>
+</html>
+{{ end }}
+
+{{ define "summary" }}
+{{ if .SummaryCards }}
+<div class="stats-grid">
+    {{ range .SummaryCards }}
+    <div class="stat-card">
+        <h3>{{ .Title }}</h3>
+        <div class="value">{{ .Value }}</div>
+    </div>
+    {{ end }}
+</div>
+{{ end }}
+{{ end }}
+
+{{ define "issues" }}
+<div class="section">
+    <div class="section-header">Scanner Issues ({{ .Total }})</div>
+    <div class="section-content">
+        {{ if eq .Total 0 }}
+        <p>No issues found.</p>
+        {{ else }}
+        <div class="filter-bar">
+            <input type="text" id="issueFilterInput" placeholder="Filter by name, host, type, or serial..." onkeyup="filterIssuesTable()">
+            <select id="issueSeverityFilter" onchange="filterIssuesTable()">
+                <option value="">All Severities</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+                <option value="Information">Information</option>
+            </select>
+            <select id="issueConfidenceFilter" onchange="filterIssuesTable()">
+                <option value="">All Confidence</option>
+                <option value="Certain">Certain</option>
+                <option value="Firm">Firm</option>
+                <option value="Tentative">Tentative</option>
+            </select>
+            <select id="issueTypeFilter" onchange="filterIssuesTable()">
+                <option value="">All Issue Types</option>
+                {{ range .TypeOptions }}
+                <option value="{{ .ID }}">{{ .Label }}</option>
+                {{ end }}
+            </select>
+        </div>
+        <div id="issuesTable">
+            {{ range .Groups }}
+            <details class="issue-group" data-type="{{ .TypeID }}">
+                <summary>
+                    <div class="issue-group-summary">
+                        <div class="issue-group-title">
+                            <span class="badge {{ .MaxSeverityClass }}">{{ .MaxSeverity }}</span>
+                            <span class="issue-group-name">{{ .Name }}</span>
+                        </div>
+                        <div class="issue-group-meta">Type {{ .TypeID }} - {{ .Count }} instance(s)</div>
+                    </div>
+                </summary>
+                <div class="issue-group-body">
+                    <table class="issue-table">
+                        <thead>
+                            <tr>
+                                <th>Instance</th>
+                                <th>Serial</th>
+                                <th>Severity</th>
+                                <th>Confidence</th>
+                                <th>Host</th>
+                                <th>Path</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{ range .Issues }}
+                            <tr class="expandable issue-row" data-type="{{ .TypeID }}" data-severity="{{ .Severity }}" data-confidence="{{ .Confidence }}" data-search="{{ .Search }}" onclick="toggleDetails('{{ .Details.ID }}')">
+                                <td>{{ .Index }}</td>
+                                <td>{{ .Serial }}</td>
+                                <td><span class="badge {{ .SeverityClass }}">{{ .Severity }}</span></td>
+                                <td><span class="badge {{ .ConfidenceClass }}">{{ .Confidence }}</span></td>
+                                <td class="truncate">{{ .Host }}</td>
+                                <td class="truncate">{{ .Path }}</td>
+                            </tr>
+                            <tr>
+                                <td colspan="6">
+                                    <div id="details-{{ .Details.ID }}" class="details">
+                                        <div class="issue-header">
+                                            <div class="issue-title">{{ .Details.Name }}</div>
+                                            <div class="issue-meta">
+                                                <span class="badge {{ .SeverityClass }}">{{ .Severity }}</span>
+                                                <span class="badge {{ .ConfidenceClass }}">{{ .Confidence }}</span>
+                                                <span class="issue-type">Type {{ .Details.TypeID }}</span>
+                                            </div>
+                                        </div>
+                                        <div class="detail-grid">
+                                            <div class="detail-label">Task ID</div>
+                                            <div class="detail-value">{{ .Details.TaskID }}</div>
+                                            <div class="detail-label">Host</div>
+                                            <div class="detail-value">{{ .Details.Host }}</div>
+                                            <div class="detail-label">Path</div>
+                                            <div class="detail-value">{{ .Details.Path }}</div>
+                                            <div class="detail-label">Location</div>
+                                            <div class="detail-value">{{ .Details.Location }}</div>
+                                        </div>
+                                        {{ if .Details.Description }}
+                                        <h4>Description</h4>
+                                        {{ .Details.Description }}
+                                        {{ end }}
+                                        {{ if .Details.Remediation }}
+                                        <h4>Remediation</h4>
+                                        {{ .Details.Remediation }}
+                                        {{ end }}
+                                        {{ if .Details.Overview }}
+                                        <h4>Overview</h4>
+                                        {{ .Details.Overview }}
+                                        {{ end }}
+                                        {{ if .Details.References }}
+                                        <h4>References</h4>
+                                        <ul>
+                                            {{ range .Details.References }}
+                                            <li><a href="{{ .URL }}" target="_blank">{{ .Title }}</a></li>
+                                            {{ end }}
+                                        </ul>
+                                        {{ end }}
+                                        {{ if .Details.Classifications }}
+                                        <h4>Classifications</h4>
+                                        <ul>
+                                            {{ range .Details.Classifications }}
+                                            <li><a href="{{ .URL }}" target="_blank">{{ .Title }}</a></li>
+                                            {{ end }}
+                                        </ul>
+                                        {{ end }}
+                                        {{ if .Details.Evidence }}
+                                        <h4>Evidence</h4>
+                                        {{ range .Details.Evidence }}
+                                        <h5>Evidence {{ .Index }}</h5>
+                                        {{ if .HasRequest }}
+                                        <h6>Request</h6>
+                                        <pre>{{ .Request }}</pre>
+                                        {{ end }}
+                                        {{ if .HasResponse }}
+                                        <h6>Response</h6>
+                                        <pre>{{ .Response }}</pre>
+                                        {{ end }}
+                                        {{ end }}
+                                        {{ if .Details.EvidenceNotice }}
+                                        <p>{{ .Details.EvidenceNotice }}</p>
+                                        {{ end }}
+                                        {{ end }}
+                                    </div>
+                                </td>
+                            </tr>
+                            {{ end }}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+            {{ end }}
+            {{ if .MaxNotice }}
+            <div class="muted">{{ .MaxNotice }}</div>
+            {{ end }}
+        </div>
+        {{ end }}
+    </div>
+</div>
+{{ end }}
+
+{{ define "tasks" }}
+<div class="section">
+    <div class="section-header">Tasks ({{ .Total }})</div>
+    <div class="section-content">
+        {{ if eq .Total 0 }}
+        <p>No tasks found.</p>
+        {{ else }}
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Scope</th>
+                    <th>ID</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{ range .Tasks }}
+                <tr>
+                    <td>{{ .Index }}</td>
+                    <td>{{ .Name }}</td>
+                    <td>{{ .Type }}</td>
+                    <td>{{ .Scope }}</td>
+                    <td>{{ .ID }}</td>
+                </tr>
+                {{ end }}
+            </tbody>
+        </table>
+        {{ if .MaxNotice }}
+        <div class="muted">{{ .MaxNotice }}</div>
+        {{ end }}
+        {{ end }}
+    </div>
+</div>
+{{ end }}
+
+{{ define "repeater" }}
+<div class="section">
+    <div class="section-header">Repeater Tabs ({{ .Total }})</div>
+    <div class="section-content">
+        {{ if eq .Total 0 }}
+        <p>No Repeater tabs found.</p>
+        {{ else }}
+        <ul class="host-list">
+            {{ range .Tabs }}
+            <li><span class="host-name">{{ . }}</span></li>
+            {{ end }}
+        </ul>
+        {{ if .MaxNotice }}
+        <p class="muted">{{ .MaxNotice }}</p>
+        {{ end }}
+        {{ end }}
+    </div>
+</div>
+{{ end }}
+
+{{ define "history" }}
+<div class="section">
+    <div class="section-header">HTTP History ({{ .Total }})</div>
+    <div class="section-content">
+        {{ if eq .Total 0 }}
+        <p>No HTTP history found.</p>
+        {{ else }}
+        <div class="filter-bar">
+            <input type="text" id="historyFilterInput" placeholder="Filter by URL, host, or method..." onkeyup="filterHistoryTable()">
+            <select id="historyStatusFilter" onchange="filterHistoryTable()">
+                <option value="">All Status</option>
+                <option value="2">2xx Success</option>
+                <option value="3">3xx Redirect</option>
+                <option value="4">4xx Client Error</option>
+                <option value="5">5xx Server Error</option>
+            </select>
+        </div>
+        <table id="historyTable">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Method</th>
+                    <th>Host</th>
+                    <th>Path</th>
+                    <th>Status</th>
+                    <th>Size</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{ range .Entries }}
+                <tr class="{{ if .Expandable }}expandable{{ end }}" {{ if .Expandable }}onclick="toggleDetails('history-{{ .ID }}')"{{ end }}>
+                    <td>{{ .ID }}</td>
+                    <td><span class="method {{ .MethodClass }}">{{ .Method }}</span></td>
+                    <td class="truncate">{{ .Host }}</td>
+                    <td class="truncate">{{ .Path }}</td>
+                    <td><span class="status {{ .StatusClass }}">{{ .Status }}</span></td>
+                    <td>{{ .Size }}</td>
+                </tr>
+                {{ if .Expandable }}
+                <tr>
+                    <td colspan="6">
+                        <div id="details-history-{{ .ID }}" class="details">
+                            <h4>Request</h4>
+                            <pre>{{ .RequestPreview }}</pre>
+                            {{ if .HasResponse }}
+                            <h4 style="margin-top:15px">Response</h4>
+                            <pre>{{ .ResponsePreview }}</pre>
+                            {{ end }}
+                        </div>
+                    </td>
+                </tr>
+                {{ end }}
+                {{ end }}
+            </tbody>
+        </table>
+        {{ if .MaxNotice }}
+        <div class="muted">{{ .MaxNotice }}</div>
+        {{ end }}
+        {{ end }}
+    </div>
+</div>
+{{ end }}
+
+{{ define "sitemap" }}
+<div class="section">
+    <div class="section-header">Site Map</div>
+    <div class="section-content">
+        {{ if not .HasData }}
+        <p>No site map data available.</p>
+        {{ else }}
+        <div class="sitemap-tree">
+            <ul class="tree-root">
+                {{ range .Hosts }}
+                {{ template "sitemapNode" . }}
+                {{ end }}
+            </ul>
+        </div>
+        {{ end }}
+    </div>
+</div>
+{{ end }}
+
+{{ define "sitemapNode" }}
+{{ if .Children }}
+<li>
+    <details class="tree-node">
+        <summary>
+            <span class="tree-label">{{ .Label }}</span>
+            <span class="tree-count">{{ .Count }}</span>
+            <button type="button" class="copy-btn" data-copy="{{ .CopyValue }}" onclick="copyText(event)">Copy</button>
+        </summary>
+        <ul class="tree-list">
+            {{ range .Children }}
+            {{ template "sitemapNode" . }}
+            {{ end }}
+        </ul>
+    </details>
+</li>
+{{ else }}
+<li>
+    <div class="tree-leaf">
+        <span class="tree-label">{{ .Label }}</span>
+        <span class="tree-count">{{ .Count }}</span>
+        <button type="button" class="copy-btn" data-copy="{{ .CopyValue }}" onclick="copyText(event)">Copy</button>
+    </div>
+</li>
+{{ end }}
+{{ end }}
