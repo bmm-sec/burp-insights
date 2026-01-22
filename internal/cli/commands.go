@@ -694,7 +694,7 @@ func runTasks(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(output, "Found %d task(s):\n\n", len(tasks))
 	for _, task := range tasks {
-		fmt.Fprintf(output, "- [%s] %s\n", burp.UITaskTypeLabel(task.Type), task.Name)
+		fmt.Fprintf(output, "- %s\n", task.Name)
 	}
 
 	return nil
