@@ -18,6 +18,11 @@ const (
 	MaxBodySize int64  = 10 * 1024 * 1024
 )
 
+const (
+	minHTTPResponseStartLen = len("HTTP/2 000")
+	httpResponseProbeLen    = 32
+)
+
 var (
 	ErrInvalidFile     = errors.New("invalid burp project file")
 	ErrInvalidMagic    = errors.New("invalid magic bytes")
@@ -31,9 +36,8 @@ var (
 		[]byte("HEAD "),
 		[]byte("OPTIONS "),
 	}
-	httpResponsePattern = []byte("HTTP/1.")
-	hostHeaderPattern   = regexp.MustCompile(`(?i)^Host:\s*(.+)$`)
-	contentTypePattern  = regexp.MustCompile(`(?i)^Content-Type:\s*(.+)$`)
+	httpResponsePrefix       = []byte("HTTP/")
+	httpResponseStartPattern = regexp.MustCompile(`^HTTP/(?:1\.0|1\.1|2(?:\.0)?|3(?:\.0)?)[ \t]+[0-9]{3}(?:[ \t]|\r|\n|$)`)
 )
 
 type Parser struct {
@@ -178,6 +182,18 @@ func deduplicateOffsets(offsets []int64) []int64 {
 func (p *Parser) parseRecordAtOffset(offset int64) HTTPRecordLocation {
 	loc := HTTPRecordLocation{RequestOffset: offset}
 
+	if reqLen, ok := p.readLengthPrefixedDataLen(offset); ok && p.looksLikeHTTPRequestAt(offset) {
+		loc.RequestLength = reqLen
+
+		nextRecordOffset := offset + int64(reqLen)
+		if respOffset, respLen, ok := p.readLengthPrefixedRecordAt(nextRecordOffset); ok && p.looksLikeHTTPResponseAt(respOffset) {
+			loc.ResponseOffset = respOffset
+			loc.ResponseLength = respLen
+		}
+
+		return loc
+	}
+
 	maxReadSize := 128 * 1024
 	data, err := p.reader.ReadAt(offset, maxReadSize)
 	if err != nil || len(data) < 10 {
@@ -203,7 +219,7 @@ func (p *Parser) parseRecordAtOffset(offset int64) HTTPRecordLocation {
 		return loc
 	}
 
-	respIdx := bytes.Index(data[searchStart:], httpResponsePattern)
+	respIdx := findHTTPResponseStart(data[searchStart:])
 	if respIdx >= 0 {
 		loc.ResponseOffset = offset + int64(searchStart) + int64(respIdx)
 		respData := data[searchStart+respIdx:]
@@ -215,6 +231,96 @@ func (p *Parser) parseRecordAtOffset(offset int64) HTTPRecordLocation {
 	}
 
 	return loc
+}
+
+func (p *Parser) readLengthPrefixedDataLen(dataOffset int64) (int, bool) {
+	recordOffset := dataOffset - 8
+	if recordOffset < 0 {
+		return 0, false
+	}
+
+	dataStart, dataLen, ok := p.readLengthPrefixedRecordAt(recordOffset)
+	if !ok || dataStart != dataOffset {
+		return 0, false
+	}
+
+	return dataLen, true
+}
+
+func (p *Parser) readLengthPrefixedRecordAt(recordOffset int64) (int64, int, bool) {
+	if recordOffset < 0 || recordOffset+8 > p.reader.Size() {
+		return 0, 0, false
+	}
+
+	header, err := p.reader.ReadAt(recordOffset, 8)
+	if err != nil || len(header) < 8 {
+		return 0, 0, false
+	}
+
+	totalLen := stdbinary.BigEndian.Uint32(header[:4])
+	dataLen := stdbinary.BigEndian.Uint32(header[4:8])
+	if totalLen == 0 || dataLen == 0 || totalLen != dataLen+8 {
+		return 0, 0, false
+	}
+
+	recordEnd := recordOffset + int64(totalLen)
+	if recordEnd > p.reader.Size() {
+		return 0, 0, false
+	}
+
+	return recordOffset + 8, int(dataLen), true
+}
+
+func (p *Parser) looksLikeHTTPRequestAt(offset int64) bool {
+	buf, err := p.reader.ReadAt(offset, 8)
+	if err != nil || len(buf) == 0 {
+		return false
+	}
+
+	for _, pattern := range httpMethodPatterns {
+		if bytes.HasPrefix(buf, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Parser) looksLikeHTTPResponseAt(offset int64) bool {
+	buf, err := p.reader.ReadAt(offset, httpResponseProbeLen)
+	if err != nil || len(buf) < minHTTPResponseStartLen {
+		return false
+	}
+	return isHTTPResponseStart(buf)
+}
+
+func findHTTPResponseStart(data []byte) int {
+	if len(data) < minHTTPResponseStartLen {
+		return -1
+	}
+
+	idx := 0
+	for idx < len(data) {
+		pos := bytes.Index(data[idx:], httpResponsePrefix)
+		if pos == -1 {
+			return -1
+		}
+		idx += pos
+		if idx+minHTTPResponseStartLen > len(data) {
+			return -1
+		}
+		if isHTTPResponseStart(data[idx:]) {
+			return idx
+		}
+		idx += len(httpResponsePrefix)
+	}
+	return -1
+}
+
+func isHTTPResponseStart(data []byte) bool {
+	if len(data) < minHTTPResponseStartLen {
+		return false
+	}
+	return httpResponseStartPattern.Match(data)
 }
 
 func findHTTPRequestEnd(data []byte) int {
@@ -272,7 +378,7 @@ func findHTTPResponseEnd(data []byte) int {
 		}
 	}
 
-	httpPos := bytes.Index(searchData, []byte("HTTP/1."))
+	httpPos := findHTTPResponseStart(searchData)
 	if httpPos > 0 && (nextHTTP == -1 || httpPos < nextHTTP) {
 		nextHTTP = httpPos
 	}
