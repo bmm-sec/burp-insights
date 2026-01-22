@@ -103,34 +103,21 @@ func (p *Parser) buildUITaskDisplayName(taskPtr int64, rec typedRecord, taskInde
 			customName = fmt.Sprintf("%d. %s", taskIndex, custom)
 		}
 	}
-
-	switch rec.Type {
-	case 4:
-		if customName != "" {
-			return scope, customName, scopeErr
-		}
-		if scope == "" {
-			return "", fmt.Sprintf("%d. Live passive crawl (scope unknown)", taskIndex), scopeErr
-		}
-		return scope, fmt.Sprintf("%d. Live passive crawl from %s", taskIndex, scope), nil
-	case 5:
-		if customName != "" {
-			return scope, customName, scopeErr
-		}
-		if scope == "" {
-			return "", fmt.Sprintf("%d. Live audit (scope unknown)", taskIndex), scopeErr
-		}
-		return scope, fmt.Sprintf("%d. Live audit from %s", taskIndex, scope), nil
-	case 2, 3:
-		if customName == "" {
-			return scope, fmt.Sprintf("%d. Custom task", taskIndex), scopeErr
-		}
+	if customName != "" {
 		return scope, customName, scopeErr
-	default:
-		if customName != "" {
-			return scope, customName, scopeErr
+	}
+
+	label := UITaskTypeLabel(rec.Type)
+	switch label {
+	case "Live passive crawl", "Live audit":
+		if scope == "" {
+			return "", fmt.Sprintf("%d. %s (scope unknown)", taskIndex, label), scopeErr
 		}
-		base := fmt.Sprintf("%d. Task", taskIndex)
+		return scope, fmt.Sprintf("%d. %s from %s", taskIndex, label, scope), nil
+	case "Custom task":
+		return scope, fmt.Sprintf("%d. %s", taskIndex, label), scopeErr
+	default:
+		base := fmt.Sprintf("%d. %s", taskIndex, label)
 		if scope != "" {
 			return scope, fmt.Sprintf("%s (%s)", base, scope), scopeErr
 		}
