@@ -95,31 +95,32 @@ func (p *Parser) ScanUITasks() ([]UITask, error) {
 func (p *Parser) buildUITaskDisplayName(taskPtr int64, rec typedRecord, taskIndex int) (scope string, displayName string, scopeErr error) {
 	scope, scopeErr = p.readScopeStringFromUITaskRecord(taskPtr, rec)
 	custom, _ := p.readCustomNameFromUITaskRecord(taskPtr, rec)
-	customName := ""
-	if custom != "" {
-		if hasNumericPrefix(custom) {
-			customName = custom
-		} else {
-			customName = fmt.Sprintf("%d. %s", taskIndex, custom)
-		}
-	}
-	if customName != "" {
-		return scope, customName, scopeErr
-	}
-
+	custom = stripNumericPrefix(strings.TrimSpace(custom))
 	label := UITaskTypeLabel(rec.Type)
-	switch label {
-	case "Live passive crawl", "Live audit":
+	base := fmt.Sprintf("%d. %s", taskIndex, label)
+
+	switch rec.Type {
+	case 4, 5:
 		if scope == "" {
-			return "", fmt.Sprintf("%d. %s (scope unknown)", taskIndex, label), scopeErr
+			base = fmt.Sprintf("%s (scope unknown)", base)
+		} else {
+			base = fmt.Sprintf("%s from %s", base, scope)
 		}
-		return scope, fmt.Sprintf("%d. %s from %s", taskIndex, label, scope), nil
-	case "Custom task":
-		return scope, fmt.Sprintf("%d. %s", taskIndex, label), scopeErr
+		if custom != "" {
+			base = fmt.Sprintf("%s: %s", base, custom)
+		}
+		return scope, base, scopeErr
+	case 2, 3:
+		if custom != "" {
+			base = fmt.Sprintf("%s: %s", base, custom)
+		}
+		return scope, base, scopeErr
 	default:
-		base := fmt.Sprintf("%d. %s", taskIndex, label)
 		if scope != "" {
-			return scope, fmt.Sprintf("%s (%s)", base, scope), scopeErr
+			base = fmt.Sprintf("%s (%s)", base, scope)
+		}
+		if custom != "" {
+			base = fmt.Sprintf("%s: %s", base, custom)
 		}
 		return scope, base, scopeErr
 	}
@@ -133,6 +134,13 @@ func hasNumericPrefix(s string) bool {
 		return false
 	}
 	return strings.HasPrefix(s[1:], ". ")
+}
+
+func stripNumericPrefix(s string) string {
+	if !hasNumericPrefix(s) {
+		return s
+	}
+	return strings.TrimSpace(s[3:])
 }
 
 func (p *Parser) readListWrapper(offset int64) (count uint32, vecPtr int64, _ error) {
