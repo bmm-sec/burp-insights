@@ -106,7 +106,7 @@ type tasksSectionView struct {
 type taskView struct {
 	Index int
 	Name  string
-	Type  uint16
+	Kind  string
 	Scope string
 	ID    int64
 }
@@ -407,7 +407,7 @@ func buildTasksSection(tasks []burp.UITask, opts Options) *tasksSectionView {
 		section.Tasks = append(section.Tasks, taskView{
 			Index: idx + 1,
 			Name:  task.Name,
-			Type:  task.Type,
+			Kind:  burp.UITaskTypeLabel(task.Type),
 			Scope: task.Scope,
 			ID:    task.ID,
 		})

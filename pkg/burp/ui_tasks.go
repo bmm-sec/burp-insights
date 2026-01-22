@@ -9,10 +9,30 @@ import (
 )
 
 type UITask struct {
-	ID    int64  `json:"id"`
-	Type  uint16 `json:"type"`
-	Name  string `json:"name"`
-	Scope string `json:"scope,omitempty"`
+	ID         int64  `json:"id"`
+	Type       uint16 `json:"type"`
+	Name       string `json:"name"`
+	Scope      string `json:"scope,omitempty"`
+	ScopeError string `json:"scope_error,omitempty"`
+}
+
+func UITaskTypeLabel(taskType uint16) string {
+	switch taskType {
+	case 4:
+		return "Live passive crawl"
+	case 5:
+		return "Live audit"
+	case 6:
+		return "Intruder attack"
+	case 7:
+		return "API Scan"
+	case 3:
+		return "Extension driven passive scan"
+	case 2:
+		return "Crawl and Audit"
+	default:
+		return "Other"
+	}
 }
 
 func (p *Parser) ScanUITasks() ([]UITask, error) {
@@ -56,50 +76,65 @@ func (p *Parser) ScanUITasks() ([]UITask, error) {
 		}
 
 		taskIndex := int(i) + 1
-		scope, displayName, err := p.buildUITaskDisplayName(taskPtr, rec, taskIndex)
-		if err != nil {
-			return nil, fmt.Errorf("build task name at 0x%x: %w", taskPtr, err)
-		}
-
-		tasks = append(tasks, UITask{
+		scope, displayName, scopeErr := p.buildUITaskDisplayName(taskPtr, rec, taskIndex)
+		task := UITask{
 			ID:    taskPtr,
 			Type:  rec.Type,
 			Name:  displayName,
 			Scope: scope,
-		})
+		}
+		if scopeErr != nil && (rec.Type == 4 || rec.Type == 5) {
+			task.ScopeError = scopeErr.Error()
+		}
+		tasks = append(tasks, task)
 	}
 
 	return tasks, nil
 }
 
-func (p *Parser) buildUITaskDisplayName(taskPtr int64, rec typedRecord, taskIndex int) (scope string, displayName string, _ error) {
-	scope, _ = p.readScopeStringFromUITaskRecord(taskPtr, rec)
+func (p *Parser) buildUITaskDisplayName(taskPtr int64, rec typedRecord, taskIndex int) (scope string, displayName string, scopeErr error) {
+	scope, scopeErr = p.readScopeStringFromUITaskRecord(taskPtr, rec)
+	custom, _ := p.readCustomNameFromUITaskRecord(taskPtr, rec)
+	customName := ""
+	if custom != "" {
+		if hasNumericPrefix(custom) {
+			customName = custom
+		} else {
+			customName = fmt.Sprintf("%d. %s", taskIndex, custom)
+		}
+	}
 
 	switch rec.Type {
 	case 4:
+		if customName != "" {
+			return scope, customName, scopeErr
+		}
 		if scope == "" {
-			return "", "", errors.New("unable to locate task scope string")
+			return "", fmt.Sprintf("%d. Live passive crawl (scope unknown)", taskIndex), scopeErr
 		}
 		return scope, fmt.Sprintf("%d. Live passive crawl from %s", taskIndex, scope), nil
 	case 5:
+		if customName != "" {
+			return scope, customName, scopeErr
+		}
 		if scope == "" {
-			return "", "", errors.New("unable to locate task scope string")
+			return "", fmt.Sprintf("%d. Live audit (scope unknown)", taskIndex), scopeErr
 		}
 		return scope, fmt.Sprintf("%d. Live audit from %s", taskIndex, scope), nil
 	case 2, 3:
-		custom, _ := p.readCustomNameFromUITaskRecord(taskPtr, rec)
-		if custom == "" {
-			return scope, fmt.Sprintf("%d. Custom task", taskIndex), nil
+		if customName == "" {
+			return scope, fmt.Sprintf("%d. Custom task", taskIndex), scopeErr
 		}
-		if hasNumericPrefix(custom) {
-			return scope, custom, nil
-		}
-		return scope, fmt.Sprintf("%d. %s", taskIndex, custom), nil
+		return scope, customName, scopeErr
 	default:
-		if scope != "" {
-			return scope, fmt.Sprintf("%d. Task (type=%d) %s", taskIndex, rec.Type, scope), nil
+		if customName != "" {
+			return scope, customName, scopeErr
 		}
-		return "", fmt.Sprintf("%d. Task (type=%d)", taskIndex, rec.Type), nil
+		base := fmt.Sprintf("%d. Task", taskIndex)
+		if scope != "" {
+			return scope, fmt.Sprintf("%s (%s)", base, scope), scopeErr
+		}
+		return scope, base, scopeErr
 	}
 }
 
@@ -282,7 +317,7 @@ func (p *Parser) readScopeStringFromUITaskRecord(taskPtr int64, rec typedRecord)
 		return "", err
 	}
 	if count == 0 {
-		return "", nil
+		return "", errors.New("empty task scope list")
 	}
 
 	ptrs, err := p.readPointerVector(vecPtr)
@@ -301,7 +336,11 @@ func (p *Parser) readScopeStringFromUITaskRecord(taskPtr int64, rec typedRecord)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(scope), nil
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return "", errors.New("empty task scope string")
+	}
+	return scope, nil
 }
 
 func (p *Parser) readScopeListWrapperPtr(scopeContainerPtr int64) (int64, error) {
