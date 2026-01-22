@@ -123,6 +123,12 @@ func SearchStream(ctx context.Context, entryChan <-chan HTTPEntry, opts SearchOp
 	resultChan := make(chan SearchResult, 100)
 	errChan := make(chan error, 1)
 
+	if opts.Query == "" {
+		close(resultChan)
+		close(errChan)
+		return resultChan, errChan
+	}
+
 	go func() {
 		defer close(resultChan)
 		defer close(errChan)
