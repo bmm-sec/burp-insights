@@ -112,8 +112,12 @@ func exportCSV(w io.Writer, entries []HTTPEntry, opts ExportOptions) error {
 	}
 
 	for _, entry := range entries {
+		timestamp := ""
+		if !entry.Timestamp.IsZero() {
+			timestamp = entry.Timestamp.Format(time.RFC3339)
+		}
 		line := csvEscape(intToString(int(entry.ID))) + "," +
-			csvEscape(entry.Timestamp.Format(time.RFC3339)) + "," +
+			csvEscape(timestamp) + "," +
 			csvEscape(entry.Method) + "," +
 			csvEscape(entry.Host) + "," +
 			csvEscape(entry.Path) + "," +
