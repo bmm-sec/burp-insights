@@ -4,7 +4,10 @@ import (
 	"bytes"
 	stdbinary "encoding/binary"
 	"errors"
+	"net"
+	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf16"
@@ -21,12 +24,30 @@ const (
 const (
 	minHTTPResponseStartLen = len("HTTP/2 000")
 	httpResponseProbeLen    = 32
+	maxResponseLinkDistance = int64(16 * 1024 * 1024)
 )
 
 var (
 	ErrInvalidFile     = errors.New("invalid burp project file")
 	ErrInvalidMagic    = errors.New("invalid magic bytes")
 	ErrParseError      = errors.New("parse error")
+	httpHistoryEntrySignature = []byte{
+		0x00, 0x00, 0x00, 0x0e,
+		0x00, 0x00, 0x2e,
+		0x01, 0x00, 0x36,
+		0x02, 0x00, 0x3e,
+		0x03, 0x00, 0x46,
+		0x04, 0x00, 0x4e,
+		0x05, 0x00, 0x56,
+		0x06, 0x00, 0x5e,
+		0x07, 0x00, 0x60,
+		0x08, 0x00, 0x64,
+		0x09, 0x00, 0x6c,
+		0x0a, 0x00, 0x6d,
+		0x0b, 0x00, 0x75,
+		0x0c, 0x00, 0x76,
+		0x0d, 0x00, 0x7e,
+	}
 	httpMethodPatterns = [][]byte{
 		[]byte("GET "),
 		[]byte("POST "),
@@ -41,9 +62,10 @@ var (
 )
 
 type Parser struct {
-	reader *binary.Reader
-	path   string
-	mu     sync.RWMutex
+	reader        *binary.Reader
+	path          string
+	mu            sync.RWMutex
+	responseIndex *httpResponseIndex
 }
 
 func NewParser(path string) (*Parser, error) {
@@ -104,6 +126,10 @@ func (p *Parser) ScanHTTPRecords() ([]HTTPRecordLocation, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
+	if locations, err := p.scanHTTPRecordsFromHistoryEntries(); err == nil && len(locations) > 0 {
+		return locations, nil
+	}
+
 	fileSize := p.reader.Size()
 	bufSize := 1024 * 1024
 
@@ -157,6 +183,97 @@ func (p *Parser) ScanHTTPRecords() ([]HTTPRecordLocation, error) {
 		loc := p.parseRecordAtOffset(off)
 		if loc.RequestLength > 0 {
 			locations = append(locations, loc)
+		}
+	}
+
+	return locations, nil
+}
+
+func (p *Parser) scanHTTPRecordsFromHistoryEntries() ([]HTTPRecordLocation, error) {
+	fileSize := p.reader.Size()
+	bufSize := 1024 * 1024
+
+	const (
+		historyEntryRequestPtrOffset  = 0x3e
+		historyEntryResponsePtrOffset = 0x46
+		historyEntryMinLen            = historyEntryResponsePtrOffset + 8
+	)
+
+	seen := make(map[int64]struct{})
+	var locations []HTTPRecordLocation
+
+	offset := int64(HeaderSize)
+	for offset < fileSize {
+		readSize := bufSize
+		remaining := fileSize - offset
+		if remaining < int64(bufSize) {
+			readSize = int(remaining)
+		}
+
+		data, err := p.reader.ReadAt(offset, readSize)
+		if err != nil || len(data) == 0 {
+			break
+		}
+
+		searchIdx := 0
+		for {
+			pos := bytes.Index(data[searchIdx:], httpHistoryEntrySignature)
+			if pos == -1 {
+				break
+			}
+			i := searchIdx + pos
+			abs := offset + int64(i)
+
+			rec, err := p.reader.ReadAt(abs, historyEntryMinLen)
+			if err != nil || len(rec) < historyEntryMinLen {
+				searchIdx = i + 1
+				continue
+			}
+			if !bytes.HasPrefix(rec, httpHistoryEntrySignature) {
+				searchIdx = i + 1
+				continue
+			}
+
+			reqPtr := int64(stdbinary.BigEndian.Uint64(rec[historyEntryRequestPtrOffset : historyEntryRequestPtrOffset+8]))
+			if reqPtr <= 0 || reqPtr >= p.reader.Size() {
+				searchIdx = i + 1
+				continue
+			}
+			if _, ok := seen[reqPtr]; ok {
+				searchIdx = i + 1
+				continue
+			}
+
+			reqOffset, reqLen, ok := p.readLengthPrefixedRecordAt(reqPtr)
+			if !ok || !p.looksLikeHTTPRequestAt(reqOffset) {
+				searchIdx = i + 1
+				continue
+			}
+
+			loc := HTTPRecordLocation{
+				RequestOffset: reqOffset,
+				RequestLength: reqLen,
+			}
+
+			respPtr := int64(stdbinary.BigEndian.Uint64(rec[historyEntryResponsePtrOffset : historyEntryResponsePtrOffset+8]))
+			if respPtr > 0 && respPtr < p.reader.Size() {
+				respOffset, respLen, ok := p.readLengthPrefixedRecordAt(respPtr)
+				if ok && p.looksLikeHTTPResponseAt(respOffset) {
+					loc.ResponseOffset = respOffset
+					loc.ResponseLength = respLen
+				}
+			}
+
+			locations = append(locations, loc)
+			seen[reqPtr] = struct{}{}
+			searchIdx = i + 1
+		}
+
+		overlap := len(httpHistoryEntrySignature) - 1
+		if len(data) > overlap {
+			offset += int64(len(data) - overlap)
+		} else {
+			offset += int64(len(data))
 		}
 	}
 
@@ -424,16 +541,15 @@ func parseIntFromString(s string, result *int) (bool, error) {
 }
 
 func (p *Parser) ParseHTTPEntry(loc HTTPRecordLocation) (*HTTPEntry, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	entry := &HTTPEntry{
 		ID: uint64(loc.RequestOffset),
 	}
 
+	p.mu.RLock()
 	if loc.RequestLength > 0 {
 		reqData, err := p.reader.ReadAt(loc.RequestOffset, loc.RequestLength)
 		if err != nil {
+			p.mu.RUnlock()
 			return nil, err
 		}
 
@@ -445,6 +561,7 @@ func (p *Parser) ParseHTTPEntry(loc HTTPRecordLocation) (*HTTPEntry, error) {
 	if loc.ResponseLength > 0 && loc.ResponseOffset > 0 {
 		respData, err := p.reader.ReadAt(loc.ResponseOffset, loc.ResponseLength)
 		if err != nil {
+			p.mu.RUnlock()
 			return entry, nil
 		}
 
@@ -452,10 +569,148 @@ func (p *Parser) ParseHTTPEntry(loc HTTPRecordLocation) (*HTTPEntry, error) {
 		parseStatusLine(entry, entry.Response.StartLine)
 		extractContentTypeFromHeaders(entry, entry.Response.Headers)
 	}
+	p.mu.RUnlock()
+
+	if entry.Response == nil && loc.RequestOffset > 0 && loc.RequestLength > 0 {
+		requestEnd := loc.RequestOffset + int64(loc.RequestLength)
+		respOffset, respLen, ok := p.findResponseAfter(requestEnd)
+		if ok {
+			p.mu.RLock()
+			respData, err := p.reader.ReadAt(respOffset, respLen)
+			p.mu.RUnlock()
+			if err == nil && len(respData) > 0 {
+				entry.Response = parseHTTPMessage(respData)
+				parseStatusLine(entry, entry.Response.StartLine)
+				extractContentTypeFromHeaders(entry, entry.Response.Headers)
+			}
+		}
+	}
 
 	buildURL(entry)
 
 	return entry, nil
+}
+
+type httpResponseIndex struct {
+	offsets []int64
+	lengths []int
+}
+
+func (p *Parser) findResponseAfter(start int64) (int64, int, bool) {
+	idx, err := p.ensureResponseIndex()
+	if err != nil || idx == nil || len(idx.offsets) == 0 {
+		return 0, 0, false
+	}
+
+	pos := sort.Search(len(idx.offsets), func(i int) bool {
+		return idx.offsets[i] >= start
+	})
+	if pos >= len(idx.offsets) {
+		return 0, 0, false
+	}
+	if maxResponseLinkDistance > 0 && idx.offsets[pos]-start > maxResponseLinkDistance {
+		return 0, 0, false
+	}
+	return idx.offsets[pos], idx.lengths[pos], true
+}
+
+func (p *Parser) ensureResponseIndex() (*httpResponseIndex, error) {
+	p.mu.RLock()
+	if p.responseIndex != nil {
+		idx := p.responseIndex
+		p.mu.RUnlock()
+		return idx, nil
+	}
+	p.mu.RUnlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.responseIndex != nil {
+		return p.responseIndex, nil
+	}
+
+	idx, err := p.scanHTTPResponseRecords()
+	if err != nil {
+		return nil, err
+	}
+	p.responseIndex = idx
+	return idx, nil
+}
+
+func (p *Parser) scanHTTPResponseRecords() (*httpResponseIndex, error) {
+	fileSize := p.reader.Size()
+	bufSize := 1024 * 1024
+	overlap := minHTTPResponseStartLen
+
+	responseLengths := make(map[int64]int)
+	var offsets []int64
+	offset := int64(HeaderSize)
+
+	for offset < fileSize {
+		readSize := bufSize
+		remaining := fileSize - offset
+		if remaining < int64(bufSize) {
+			readSize = int(remaining)
+		}
+
+		data, err := p.reader.ReadAt(offset, readSize)
+		if err != nil || len(data) == 0 {
+			break
+		}
+
+		idx := 0
+		for idx < len(data) {
+			pos := bytes.Index(data[idx:], httpResponsePrefix)
+			if pos == -1 {
+				break
+			}
+			actualPos := idx + pos
+			if len(data)-actualPos >= minHTTPResponseStartLen && isHTTPResponseStart(data[actualPos:]) {
+				absPos := offset + int64(actualPos)
+				if absPos >= 8 {
+					header, err := p.reader.ReadAt(absPos-8, 8)
+					if err == nil && len(header) == 8 {
+						totalLen := stdbinary.BigEndian.Uint32(header[:4])
+						dataLen := stdbinary.BigEndian.Uint32(header[4:8])
+						if totalLen == dataLen+8 && dataLen >= uint32(minHTTPResponseStartLen) {
+							recordEnd := absPos - 8 + int64(totalLen)
+							if recordEnd <= fileSize {
+								if _, ok := responseLengths[absPos]; !ok {
+									responseLengths[absPos] = int(dataLen)
+									offsets = append(offsets, absPos)
+								}
+							}
+						}
+					}
+				}
+			}
+			idx = actualPos + len(httpResponsePrefix)
+		}
+
+		if len(data) > overlap {
+			offset += int64(len(data) - overlap)
+		} else {
+			offset += int64(len(data))
+		}
+	}
+
+	if len(offsets) == 0 {
+		return &httpResponseIndex{}, nil
+	}
+
+	sort.Slice(offsets, func(i, j int) bool {
+		return offsets[i] < offsets[j]
+	})
+
+	lengths := make([]int, len(offsets))
+	for i, off := range offsets {
+		lengths[i] = responseLengths[off]
+	}
+
+	return &httpResponseIndex{
+		offsets: offsets,
+		lengths: lengths,
+	}, nil
 }
 
 func parseHTTPMessage(data []byte) *HTTPMessage {
@@ -508,18 +763,80 @@ func parseRequestLine(entry *HTTPEntry, line string) {
 	parts := strings.Fields(line)
 	if len(parts) >= 2 {
 		entry.Method = parts[0]
-		fullPath := parts[1]
+		target := parts[1]
 
-		if idx := strings.Index(fullPath, "?"); idx >= 0 {
-			entry.Path = fullPath[:idx]
-			entry.QueryString = fullPath[idx+1:]
-		} else {
-			entry.Path = fullPath
+		switch {
+		case strings.EqualFold(entry.Method, "CONNECT"):
+			entry.Path = target
+			if host, port, ok := splitAuthority(target); ok {
+				entry.Host = host
+				entry.Port = port
+			}
+		case target == "*":
+			entry.Path = target
+		case strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://"):
+			if applyAbsoluteTarget(entry, target) {
+				break
+			}
+			fallthrough
+		default:
+			if idx := strings.Index(target, "?"); idx >= 0 {
+				entry.Path = target[:idx]
+				entry.QueryString = target[idx+1:]
+			} else {
+				entry.Path = target
+			}
 		}
 	}
 	if len(parts) >= 3 {
 		entry.Protocol = parts[2]
 	}
+}
+
+func applyAbsoluteTarget(entry *HTTPEntry, target string) bool {
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+
+	if parsed.Path != "" {
+		entry.Path = parsed.Path
+	} else {
+		entry.Path = "/"
+	}
+	if parsed.RawQuery != "" {
+		entry.QueryString = parsed.RawQuery
+	}
+
+	if entry.Host == "" && parsed.Hostname() != "" {
+		entry.Host = parsed.Hostname()
+	}
+	if entry.Port == 0 {
+		if portStr := parsed.Port(); portStr != "" {
+			var port int
+			parseIntFromString(portStr, &port)
+			entry.Port = port
+		} else if parsed.Scheme == "https" {
+			entry.Port = 443
+		} else if parsed.Scheme == "http" {
+			entry.Port = 80
+		}
+	}
+
+	return true
+}
+
+func splitAuthority(target string) (string, int, bool) {
+	host, portStr, err := net.SplitHostPort(target)
+	if err != nil {
+		return "", 0, false
+	}
+	var port int
+	parseIntFromString(portStr, &port)
+	if port == 0 {
+		return "", 0, false
+	}
+	return host, port, true
 }
 
 func parseStatusLine(entry *HTTPEntry, line string) {

@@ -59,3 +59,92 @@ func TestFindHTTPResponseStart(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRequestLine(t *testing.T) {
+	tests := []struct {
+		name       string
+		line       string
+		wantMethod string
+		wantPath   string
+		wantQuery  string
+		wantHost   string
+		wantPort   int
+		wantProto  string
+	}{
+		{
+			name:       "origin_form",
+			line:       "GET /content/swagger/v1/swagger.json HTTP/1.1",
+			wantMethod: "GET",
+			wantPath:   "/content/swagger/v1/swagger.json",
+			wantProto:  "HTTP/1.1",
+		},
+		{
+			name:       "origin_form_query",
+			line:       "GET /content/swagger/v1/swagger.json?x=1 HTTP/1.1",
+			wantMethod: "GET",
+			wantPath:   "/content/swagger/v1/swagger.json",
+			wantQuery:  "x=1",
+			wantProto:  "HTTP/1.1",
+		},
+		{
+			name:       "absolute_form",
+			line:       "GET https://api.example.com/content/swagger/v1/swagger.json?x=1 HTTP/1.1",
+			wantMethod: "GET",
+			wantPath:   "/content/swagger/v1/swagger.json",
+			wantQuery:  "x=1",
+			wantHost:   "api.example.com",
+			wantPort:   443,
+			wantProto:  "HTTP/1.1",
+		},
+		{
+			name:       "absolute_form_default_path",
+			line:       "GET http://example.com HTTP/1.1",
+			wantMethod: "GET",
+			wantPath:   "/",
+			wantHost:   "example.com",
+			wantPort:   80,
+			wantProto:  "HTTP/1.1",
+		},
+		{
+			name:       "connect_form",
+			line:       "CONNECT api.example.com:443 HTTP/1.1",
+			wantMethod: "CONNECT",
+			wantPath:   "api.example.com:443",
+			wantHost:   "api.example.com",
+			wantPort:   443,
+			wantProto:  "HTTP/1.1",
+		},
+		{
+			name:       "asterisk_form",
+			line:       "OPTIONS * HTTP/1.1",
+			wantMethod: "OPTIONS",
+			wantPath:   "*",
+			wantProto:  "HTTP/1.1",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := &HTTPEntry{}
+			parseRequestLine(entry, tc.line)
+			if entry.Method != tc.wantMethod {
+				t.Fatalf("Method = %q, want %q", entry.Method, tc.wantMethod)
+			}
+			if entry.Path != tc.wantPath {
+				t.Fatalf("Path = %q, want %q", entry.Path, tc.wantPath)
+			}
+			if entry.QueryString != tc.wantQuery {
+				t.Fatalf("QueryString = %q, want %q", entry.QueryString, tc.wantQuery)
+			}
+			if entry.Host != tc.wantHost {
+				t.Fatalf("Host = %q, want %q", entry.Host, tc.wantHost)
+			}
+			if entry.Port != tc.wantPort {
+				t.Fatalf("Port = %d, want %d", entry.Port, tc.wantPort)
+			}
+			if entry.Protocol != tc.wantProto {
+				t.Fatalf("Protocol = %q, want %q", entry.Protocol, tc.wantProto)
+			}
+		})
+	}
+}
